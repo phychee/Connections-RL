@@ -41,7 +41,7 @@ class ActionScorer(nn.Module):
         """
         raise NotImplementedError
 
-class Model:
+class Model(nn.Module):
     def select_action(self, q_values: torch.Tensor, mask=None) -> int:
         """
         q_values: (A, )
@@ -114,67 +114,68 @@ class SimpleGrouper(Grouper):
         """
         combos = get_all_combos(n, 4, self.device)
         # Reshape combos so they are batch-friendly
-        # Assuming embeddings has batch dim B
-        B, _, D = embeddings.shape
-        combos = combos.unsqueeze(0).expand(B, -1, -1)
-        return embeddings.gather(1, combos.unsqueeze(-1).expand(-1, -1, -1, D))
+        # Use advanced indexing: (B, 16, D)[:, (1820, 4)] -> (B, 1820, 4, D)
+        return embeddings[:, combos]
     
     def group(self, embeddings: torch.Tensor) -> torch.Tensor:
          return self.forward(embeddings.shape[1], embeddings)
-
 
 class RelationNetworkScorer(ActionScorer):
 
     def __init__(self,
                  device,
-                 d_size=384,
-                 g_hidden=256,
-                 f_hidden=128,
-                 output_size=1):
-        """
-        Inspired by the code here:
-        https://diegovianagomes.medium.com/lets-develop-a-simple-neural-network-module-for-relational-reasoning-part-1-97762ca22e01
-        """
+                 d_model: int = 384,
+                 hidden_dim: int = 256,
+                 state_dim: int = 2):
         super().__init__()
-
-        # This is g_theta from the paper
+        self.device = device
+        
+        # Relation module: takes 2 embeddings (2*D) -> hidden_dim
         self.g = nn.Sequential(
-            nn.Linear(2 * d_size, g_hidden),
+            nn.Linear(2 * d_model, hidden_dim),
             nn.ReLU(),
-            nn.Linear(g_hidden, g_hidden),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
         )
-
-        # This is f_phi from the paper
+        
+        # Scoring module: takes sum of relations (hidden_dim) + state_info (state_dim) -> 1
         self.f = nn.Sequential(
-            nn.Linear(g_hidden, f_hidden),
+            nn.Linear(hidden_dim + state_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(f_hidden, output_size)
-
+            nn.Linear(hidden_dim, 1)
         )
-        self.device = device
+        
+        self.pair_combos = get_all_combos(4, 2, device) # (6, 2)
 
-        # Get all pairwaise indexes possible of a group of 4
-        self.pair_combos = get_all_combos(4, 2, self.device)
-
-    def forward(self, group_embeddings):
+    def forward(self, group_embeddings, state_info):
         """
-        emb: (Batch, 4, 384)
-        returns (B,) score
+        group_embeddings: (Batch, A, 4, 384)
+        state_info: (Batch, state_dim)
+        returns (B, A) score
         """
-        group_pairs = group_embeddings[:, self.pair_combos]
-
-        # Concatenate the embedding pairs, (B, 6, 2*384)
-        group_pairs = group_pairs.reshape(group_embeddings.shape[0],
-                                         -1, 2 * group_embeddings.shape[2])
-
-        relations = self.g(group_pairs)
-
-        # Sum over the relations, (B, g_hidden)
-        relations_sum = relations.sum(dim=1)
+        B, A, _, D = group_embeddings.shape
+        
+        flat_embeddings = group_embeddings.view(-1, 4, D) # (B*A, 4, D)
+        
+        # Create pairs
+        group_pairs = flat_embeddings[:, self.pair_combos] # (B*A, 6, 2, D)
+        group_pairs = group_pairs.reshape(B * A, 6, 2 * D) # (B*A, 6, 2*D)
+        
+        # Relational reasoning
+        relations = self.g(group_pairs) # (B*A, 6, hidden_dim)
+        relations_sum = relations.sum(dim=1) # (B*A, hidden_dim)
+        
+        # Concatenate state info
+        # state_info: (B, state_dim) -> (B, 1, state_dim) -> (B, A, state_dim) -> (B*A, state_dim)
+        state_info_expanded = state_info.unsqueeze(1).expand(-1, A, -1).reshape(B * A, -1)
+        
+        combined = torch.cat([relations_sum, state_info_expanded], dim=1) # (B*A, hidden_dim + state_dim)
 
         # Get the scores
-        scores = self.f(relations_sum).squeeze(-1)
+        scores = self.f(combined) # (B*A, 1)
+        scores = scores.view(B, A) # (B, A)
 
         return scores
 
@@ -186,6 +187,7 @@ class ConnectionsDQN(Model):
                  scorer: ActionScorer,
                  lr=1e-4,
                  device='cpu'):
+        super().__init__()
         self.device = device
 
         # TODO: better to precompute all word embeddings and to only map: word -> embedding here
@@ -199,54 +201,112 @@ class ConnectionsDQN(Model):
             lr=lr
         )
 
-    def select_action(self, q_values: torch.Tensor, mask: Optional[torch.BoolTensor] = None, epsilon: float = 0.0) -> int:
+    def select_action(self,
+                      q_values: torch.Tensor,
+                      top_k: int = 20,
+                      mask: Optional[torch.BoolTensor] = None,
+                      epsilon: float = 0.0) -> int:
         """
         q_values: (A, ) or (1, A) tensor of Q-scores
         mask: (A, ) boolean tensor indicating a valid action
         epsilon: probability of exploration (choosing random action)
+        top_k: number of top actions to consider
         return: int (chosen action index)
         """
         # Input (1820)
         if q_values.dim() > 1:
             print(f"q_values is not 1d, is {q_values.shape}, is this intended?")
             q_values = q_values.squeeze()
+            
         masked_q_values = q_values.clone()
         if mask is not None:
             masked_q_values[~mask] = -float('inf')
-        if np.random.random() < epsilon:
-            # exploration
-            if mask is not None:
-                valid_indices = torch.nonzero(mask).flatten()
-                if len(valid_indices) > 0:
-                    # Pick random idx
-                    random_idx = int(torch.randint(len(valid_indices), (1,)).item())
-                    return int(valid_indices[random_idx].item())
-            # otherwise randomly pick one action
-            return int(torch.randint(len(q_values), (1,)).item())
+            
+        # Get top k actions
+        # If we have fewer than top_k valid actions, take all valid ones
+        if mask is not None:
+            num_valid = mask.sum().item()
+            k = min(top_k, int(num_valid))
         else:
-            # exploitation
-            return int(torch.argmax(masked_q_values).item())
+            k = top_k
+            
+        if k == 0:
+             # Should not happen if game is not over
+             return 0
 
-    def forward(self, word_embeddings: torch.Tensor) -> torch.Tensor:
+        # Get top k indices
+        _, top_k_indices = torch.topk(masked_q_values, k)
+
+        if np.random.random() < epsilon:
+            # exploration: choose randomly among top k
+            random_idx = int(torch.randint(k, (1,)).item())
+            return int(top_k_indices[random_idx].item())
+        else:
+            # exploitation: choose the best one (index 0 of top k)
+            return int(top_k_indices[0].item())
+
+    def forward(self, word_embeddings: torch.Tensor, lives: torch.Tensor, num_groups_found: torch.Tensor) -> torch.Tensor:
         """
         Passes the word embeddings through the module to get Q-scores
         word_embeddings: (B, 16, D)
-        return: (B, 1820): Q-values for all possible actions
+        lives: (B, ) float
+        num_groups_found: (B, ) float
+        returns: (B, 1820)
         """
-        # if no batch dimension, we make one
-        if word_embeddings.dim() == 2:
-            # if input: (16,D) -> (1,16,D)=(B,16,D)
-            state_emb = word_embeddings.unsqueeze(0)
-        # (B, 16, D) -> (B, 16, D)
-        contextualized_embeddings = self.contextualizer(word_embeddings)
-        # (B, 16, D) -> (B, 1820, 4, D)
-        grouped_embeddings = self.grouper(16, contextualized_embeddings) 
-        # (B, 1820, 4, D) -> (B, 1820)
-        scores = self.scorer(grouped_embeddings)
+        # Contextualize
+        context_embeddings = self.contextualizer(word_embeddings)
+        
+        # Group
+        grouped_embeddings = self.grouper(16, context_embeddings) # (B, 1820, 4, D)
+        
+        # Construct state info
+        # lives: (B,) -> (B, 1)
+        # num_groups_found: (B,) -> (B, 1)
+        if lives.dim() == 1:
+            lives = lives.unsqueeze(1)
+        if num_groups_found.dim() == 1:
+            num_groups_found = num_groups_found.unsqueeze(1)
+            
+        state_info = torch.cat([lives, num_groups_found], dim=1) # (B, 2)
+        
+        # Score
+        scores = self.scorer(grouped_embeddings, state_info)
         return scores
 
-    def train_step(self, batch):
-        raise NotImplementedError
+    def train_step(self, batch, target_net, gamma=0.99):
+        state, lives, num_groups_found, action, reward, next_state, next_lives, next_num_groups_found, finished = batch
+        
+        # Current Q-values
+        # state: (B, 16, D)
+        # q_values: (B, 1820)
+        q_values = self.forward(state, lives, num_groups_found)
+        
+        # Gather Q-values for the taken actions
+        # action: (B, 1) -> (B, 1)
+        current_q_values = q_values.gather(1, action.long())
+        
+        # Next Q-values
+        # next_state: (B, 16, D)
+        with torch.no_grad():
+            # Use target_net for next state Q-values
+            next_q_values_all = target_net(next_state, next_lives, next_num_groups_found)
+            # Max next Q-value
+            next_q_values, _ = next_q_values_all.max(dim=1, keepdim=True)
+            
+            # Target Q-values
+            # reward: (B, 1)
+            # finished: (B, 1)
+            target_q_values = reward + gamma * next_q_values * (~finished)
+            
+        # Loss
+        loss = nn.MSELoss()(current_q_values, target_q_values)
+        
+        # Optimize
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return loss.item()
 
 class DQN(nn.Module):
 
