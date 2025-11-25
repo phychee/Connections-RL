@@ -245,14 +245,16 @@ class ConnectionsDQN(Model):
             # exploitation: choose the best one (index 0 of top k)
             return int(top_k_indices[0].item())
 
-    def forward(self, word_embeddings: torch.Tensor, lives: torch.Tensor, num_groups_found: torch.Tensor) -> torch.Tensor:
+    def forward(self, state: dict) -> torch.Tensor:
         """
         Passes the word embeddings through the module to get Q-scores
-        word_embeddings: (B, 16, D)
-        lives: (B, ) float
-        num_groups_found: (B, ) float
+        state: dict {'board': (B, 16, D), 'lives': (B, 1), 'num_groups_found': (B, 1)}
         returns: (B, 1820)
         """
+        word_embeddings = state['board']
+        lives = state['lives']
+        num_groups_found = state['num_groups_found']
+
         # Contextualize
         context_embeddings = self.contextualizer(word_embeddings)
         
@@ -274,22 +276,21 @@ class ConnectionsDQN(Model):
         return scores
 
     def train_step(self, batch, target_net, gamma=0.99):
-        state, lives, num_groups_found, action, reward, next_state, next_lives, next_num_groups_found, finished = batch
+        state, action, reward, next_state, finished = batch
         
         # Current Q-values
-        # state: (B, 16, D)
-        # q_values: (B, 1820)
-        q_values = self.forward(state, lives, num_groups_found)
+        # state is now a dict
+        q_values = self.forward(state)
         
         # Gather Q-values for the taken actions
         # action: (B, 1) -> (B, 1)
         current_q_values = q_values.gather(1, action.long())
         
         # Next Q-values
-        # next_state: (B, 16, D)
         with torch.no_grad():
             # Use target_net for next state Q-values
-            next_q_values_all = target_net(next_state, next_lives, next_num_groups_found)
+            # next_state is now a dict
+            next_q_values_all = target_net(next_state)
             # Max next Q-value
             next_q_values, _ = next_q_values_all.max(dim=1, keepdim=True)
             

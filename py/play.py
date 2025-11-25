@@ -109,8 +109,14 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
             lives = state.lives.float() / 4.0
             num_groups_found = state.found_groups.sum().float() / 4.0
             
+            state_dict = {
+                'board': masked_embeddings.unsqueeze(0),
+                'lives': lives.unsqueeze(0),
+                'num_groups_found': num_groups_found.unsqueeze(0)
+            }
+            
             with torch.no_grad():
-                q_values = model(masked_embeddings.unsqueeze(0), lives.unsqueeze(0), num_groups_found.unsqueeze(0)).squeeze(0)
+                q_values = model(state_dict).squeeze(0)
                 # Top-k logic is inside select_action, but with epsilon=0 it picks the best of top_k
                 action_idx = model.select_action(q_values, top_k=20, mask=state.actions_mask, epsilon=0.0)
             

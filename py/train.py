@@ -167,9 +167,14 @@ def train_agent(
             # Num groups found: normalize by dividing by 4
             num_groups_found = state.found_groups.sum().float() / 4.0
             
+            state_dict = {
+                'board': masked_embeddings.unsqueeze(0),
+                'lives': lives.unsqueeze(0),
+                'num_groups_found': num_groups_found.unsqueeze(0)
+            }
+            
             # Model forward
-            # Add batch dim
-            q_values = model(masked_embeddings.unsqueeze(0), lives.unsqueeze(0), num_groups_found.unsqueeze(0)).squeeze(0) # (1820,)
+            q_values = model(state_dict).squeeze(0) # (1820,)
             
             # Select from top 20
             action_idx = model.select_action(q_values, top_k=20, mask=state.actions_mask, epsilon=epsilon)
@@ -187,15 +192,28 @@ def train_agent(
             next_lives = next_state.lives.float() / 4.0
             next_num_groups_found = next_state.found_groups.sum().float() / 4.0
             
+            next_state_dict = {
+                'board': next_masked_embeddings,
+                'lives': next_lives,
+                'num_groups_found': next_num_groups_found
+            }
+            
+            # For memory push, we need unbatched tensors for the current state components
+            # But wait, memory.push expects unbatched tensors
+            # state_dict above has batched tensors (unsqueeze(0))
+            # Let's create unbatched dicts for memory
+            
+            memory_state_dict = {
+                'board': masked_embeddings,
+                'lives': lives,
+                'num_groups_found': num_groups_found
+            }
+            
             memory.push(
-                masked_embeddings,
-                lives,
-                num_groups_found,
+                memory_state_dict,
                 torch.tensor([action_idx], device=device),
                 torch.tensor([reward], device=device),
-                next_masked_embeddings,
-                next_lives,
-                next_num_groups_found,
+                next_state_dict,
                 torch.tensor([finished], device=device, dtype=torch.bool)
             )
             
