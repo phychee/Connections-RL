@@ -89,7 +89,7 @@ class Game:
             # Update the action mask to remove actions that use words that we already used
             # and the action we took at this step
             new_actions_mask = self._remove_used_action(board, state, action_id)
-            no_used_words_mask = self._remove_actions_with_used_words(board, state, new_actions_mask)
+            no_used_words_mask = self._remove_actions_with_used_words(board, state, new_words_mask)
 
             new_actions_mask &= no_used_words_mask
 
