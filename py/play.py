@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 from tqdm import tqdm
+from dataclasses import replace
+from config import GameConfig
 from utils import get_device, get_clean_dataframe, get_all_combos
 from dataset import ConnectionsData
 from models import ConnectionsDQN, MiniLMEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer
@@ -99,9 +101,8 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
         
         state = GameState.game_start(board, config)
         total_reward = 0
-        
         while True:
-            # Select action (Greedy)
+            # Epsilon greedy
             masked_embeddings = board.words.clone()
             masked_embeddings[~state.words_mask] = 0
             
@@ -116,12 +117,33 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
             }
             
             with torch.no_grad():
-                q_values = model(state_dict).squeeze(0)
-                # Top-k logic is inside select_action, but with epsilon=0 it picks the best of top_k
-                action_idx = model.select_action(q_values, top_k=20, mask=state.actions_mask, epsilon=0.0)
+                q_values, top_k_indices = model(state_dict)
+                # Map global mask to top-k
+                top_k_indices_flat = top_k_indices.squeeze(0).long()
+                valid_mask_k = state.actions_mask[top_k_indices_flat]
+                
+                if valid_mask_k.sum() > 0:
+                    action_idx_in_k = model.select_action(q_values, top_k=model.k, mask=valid_mask_k, epsilon=0.0)
+                    action_idx = top_k_indices[0, action_idx_in_k].item()
+                else:
+                    # Fallback
+                    valid_indices = torch.nonzero(state.actions_mask).squeeze(1)
+                    if len(valid_indices) > 0:
+                        action_idx = valid_indices[torch.randint(len(valid_indices), (1,))].item()
+                    else:
+                        break
             
             # Step
             next_state, reward, finished, info = env.make_guess(board, state, action_idx)
+            
+            # Safety Net: If action was illegal, force remove it from actions_mask
+            # This prevents infinite loops if the mask logic gets out of sync
+            if info.get("result") == "illegal":
+                # We need to modify the state in-place or create a new one
+                # Since GameState is frozen, we use replace
+                new_actions_mask = next_state.actions_mask.clone()
+                new_actions_mask[action_idx] = False
+                next_state = replace(next_state, actions_mask=new_actions_mask)
             
             total_reward += reward.item()
             state = next_state

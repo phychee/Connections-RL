@@ -179,77 +179,101 @@ class RelationNetworkScorer(ActionScorer):
 
         return scores
 
+class PolicyNetwork(nn.Module):
+    def __init__(self, k: int = 20, state_dim: int = 2, hidden_dim: int = 128):
+        super().__init__()
+        # Input: K scores + state_dim
+        self.input_dim = k + state_dim
+        
+        self.net = nn.Sequential(
+            nn.Linear(self.input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, k) # Output Q-values for the K actions
+        )
+
+    def forward(self, top_k_scores: torch.Tensor, state_info: torch.Tensor) -> torch.Tensor:
+        """
+        top_k_scores: (B, K)
+        state_info: (B, state_dim)
+        returns: (B, K)
+        """
+        combined = torch.cat([top_k_scores, state_info], dim=1)
+        return self.net(combined)
+
 class ConnectionsDQN(Model):
     def __init__(self,
                  embedder: Embedder,
                  contextualizer: Contextualizer,
                  grouper: Grouper,
                  scorer: ActionScorer,
+                 k: int = 20,
                  lr=1e-4,
                  device='cpu'):
         super().__init__()
         self.device = device
+        self.k = k
 
         # TODO: better to precompute all word embeddings and to only map: word -> embedding here
         self.embedder = embedder
         self.contextualizer = contextualizer
         self.grouper = grouper
         self.scorer = scorer
+        
+        self.policy = PolicyNetwork(k=k, state_dim=2).to(device)
 
         self.optimizer = optim.Adam(
-            list(self.contextualizer.parameters()) + list(self.scorer.parameters()),
+            list(self.contextualizer.parameters()) + list(self.scorer.parameters()) + list(self.policy.parameters()),
             lr=lr
         )
 
     def select_action(self,
                       q_values: torch.Tensor,
-                      top_k: int = 20,
+                      top_k: int = 20, # This is now redundant/confusing if k is fixed in init, but let's keep signature
                       mask: Optional[torch.BoolTensor] = None,
                       epsilon: float = 0.0) -> int:
         """
-        q_values: (A, ) or (1, A) tensor of Q-scores
-        mask: (A, ) boolean tensor indicating a valid action
-        epsilon: probability of exploration (choosing random action)
-        top_k: number of top actions to consider
-        return: int (chosen action index)
+        q_values: (K, ) or (1, K) tensor of Q-scores for the TOP K actions
+        mask: (K, ) boolean tensor indicating a valid action among the top K
+              Wait, the mask passed from outside is usually (1820,).
+              We need to handle masking differently now.
+              The mask should be applied BEFORE top-k if possible, or we need to map the mask to top-k.
+              
+              Actually, for simplicity in this refactor step, let's assume the policy selects among the top K,
+              and we handle validity checks in the environment (illegal move penalty).
+              Or we can pass the mask for the top K indices.
         """
-        # Input (1820)
+        # Input (K)
         if q_values.dim() > 1:
-            print(f"q_values is not 1d, is {q_values.shape}, is this intended?")
             q_values = q_values.squeeze()
             
+        # q_values is size K
+        k = q_values.size(0)
+        
         masked_q_values = q_values.clone()
         if mask is not None:
             masked_q_values[~mask] = -float('inf')
             
-        # Get top k actions
-        # If we have fewer than top_k valid actions, take all valid ones
-        if mask is not None:
-            num_valid = mask.sum().item()
-            k = min(top_k, int(num_valid))
-        else:
-            k = top_k
-            
-        if k == 0:
-             # Should not happen if game is not over
-             return 0
-
-        # Get top k indices
-        _, top_k_indices = torch.topk(masked_q_values, k)
-
         if np.random.random() < epsilon:
-            # exploration: choose randomly among top k
-            random_idx = int(torch.randint(k, (1,)).item())
-            return int(top_k_indices[random_idx].item())
+            # exploration: choose randomly among K (valid ones)
+            if mask is not None:
+                valid_indices = torch.nonzero(mask).squeeze(1)
+                if len(valid_indices) > 0:
+                    return int(valid_indices[torch.randint(len(valid_indices), (1,))].item())
+            return int(torch.randint(k, (1,)).item())
         else:
-            # exploitation: choose the best one (index 0 of top k)
-            return int(top_k_indices[0].item())
+            # exploitation: choose the best one
+            return int(torch.argmax(masked_q_values).item())
 
-    def forward(self, state: dict) -> torch.Tensor:
+    def forward(self, state: dict, force_indices: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Passes the word embeddings through the module to get Q-scores
         state: dict {'board': (B, 16, D), 'lives': (B, 1), 'num_groups_found': (B, 1)}
-        returns: (B, 1820)
+        force_indices: (B, 1) - Optional indices to force into the Top K (for training)
+        returns: 
+            q_values: (B, K) - Q-values for the top K groups
+            top_k_indices: (B, K) - Original indices (0-1819) of the top K groups
         """
         word_embeddings = state['board']
         lives = state['lives']
@@ -271,33 +295,88 @@ class ConnectionsDQN(Model):
             
         state_info = torch.cat([lives, num_groups_found], dim=1) # (B, 2)
         
-        # Score
-        scores = self.scorer(grouped_embeddings, state_info)
-        return scores
+        # Score all 1820 groups
+        all_scores = self.scorer(grouped_embeddings, state_info) # (B, 1820)
+        
+        # Fixed Ranking Step: Get Top K
+        # We want the highest scores
+        top_k_scores, top_k_indices = torch.topk(all_scores, self.k, dim=1) # (B, K), (B, K)
+        
+        if force_indices is not None:
+            # force_indices: (B, 1)
+            # Check if force_indices are already in top_k_indices
+            # This is a bit complex to vectorize efficiently.
+            # Simple approach: Always replace the last element (lowest of top K) with force_indices
+            # Then re-sort? Policy doesn't strictly assume sorted, but it helps.
+            
+            # Let's just replace the last column.
+            # We need to gather the scores for force_indices
+            force_scores = all_scores.gather(1, force_indices.long()) # (B, 1)
+            
+            # Replace last column WITHOUT in-place operation
+            # We take the first K-1 columns and concatenate the forced one
+            top_k_scores = torch.cat([top_k_scores[:, :-1], force_scores], dim=1)
+            top_k_indices = torch.cat([top_k_indices[:, :-1], force_indices], dim=1)
+            
+            # Note: We might have duplicates now if force_indices was already in Top K-1.
+            # That's acceptable for now.
+        
+        # Policy Step
+        # Pass Top K scores + State to Policy
+        # top_k_scores is (B, K)
+        # state_info is (B, 2)
+        q_values = self.policy(top_k_scores, state_info) # (B, K)
+        
+        return q_values, top_k_indices
 
     def train_step(self, batch, target_net, gamma=0.99):
         state, action, reward, next_state, finished = batch
         
         # Current Q-values
-        # state is now a dict
-        q_values = self.forward(state)
+        # Force the taken action into the Top K so we can compute its Q-value
+        q_values, top_k_indices = self.forward(state, force_indices=action)
         
-        # Gather Q-values for the taken actions
-        # action: (B, 1) -> (B, 1)
-        current_q_values = q_values.gather(1, action.long())
+        # Find the index of 'action' in 'top_k_indices'
+        # action: (B, 1)
+        # top_k_indices: (B, K)
+        mask = (top_k_indices == action) # (B, K)
+        
+        # We know it MUST be there because we forced it (at least at the last position).
+        # If it was already there, it might appear twice.
+        # We want to pick one instance.
+        # Let's take the max of mask along dim 1 to get a valid index?
+        # Or just sum?
+        
+        # We want q_values[mask].
+        # Since we want to maintain batch dimension, we can do:
+        # current_q_values = (q_values * mask).sum(dim=1, keepdim=True)
+        # But we need to divide by number of matches if duplicates exist?
+        # Actually, if duplicates exist, they have same score and same policy output (if policy is permutation invariant? No MLP is not).
+        # MLP is position sensitive.
+        # If we replaced the last one, and it was also in position 0.
+        # Then we have it at 0 and K-1.
+        # Which one corresponds to the "action"? Both.
+        # Let's just take the sum and divide by count.
+        
+        # Safe approach:
+        # count = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        # current_q_values = (q_values * mask).sum(dim=1, keepdim=True) / count
+        
+        # However, for gradients, this averages the gradient to both positions.
+        # That seems fine.
+        
+        count = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        current_q_values = (q_values * mask).sum(dim=1, keepdim=True) / count
         
         # Next Q-values
         with torch.no_grad():
             # Use target_net for next state Q-values
-            # next_state is now a dict
-            next_q_values_all = target_net(next_state)
-            # Max next Q-value
-            next_q_values, _ = next_q_values_all.max(dim=1, keepdim=True)
+            # We don't force indices here, we just want the best of Top K
+            next_q_values, _ = target_net(next_state)
+            # Max next Q-value among the Top K
+            next_max_q, _ = next_q_values.max(dim=1, keepdim=True)
             
-            # Target Q-values
-            # reward: (B, 1)
-            # finished: (B, 1)
-            target_q_values = reward + gamma * next_q_values * (~finished)
+            target_q_values = reward + gamma * next_max_q * (~finished)
             
         # Loss
         loss = nn.MSELoss()(current_q_values, target_q_values)
