@@ -81,8 +81,13 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     env = Game()
     config = GameConfig()
     
-    total_rewards = []
     wins = 0
+    total_rewards = []
+    total_groups_found = 0
+    
+    # Re-evaluate num_games based on actual test_game_ids length
+    num_games_to_evaluate = len(test_game_ids)
+    print(f"Evaluating on {num_games_to_evaluate} games.")
     
     for game_id in tqdm(test_game_ids):
         # Setup board
@@ -155,12 +160,12 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
                 break
         
         total_rewards.append(total_reward)
+        total_groups_found += state.found_groups.sum().item()
         
-    avg_reward = np.mean(total_rewards)
-    win_rate = wins / len(test_game_ids)
-    
     print("\nEvaluation Results:")
-    print(f"Total Games Played: {len(test_game_ids)}")
+    print(f"Total Games Played: {num_games_to_evaluate}")
     print(f"Games Won: {wins}")
-    print(f"Win Rate: {win_rate:.2%}")
-    print(f"Average Reward: {avg_reward:.4f}")
+    print(f"Win Rate: {wins/num_games_to_evaluate*100:.2f}%")
+    print(f"Total Groups Found: {int(total_groups_found)}")
+    print(f"Average Groups Found: {total_groups_found/num_games_to_evaluate:.2f}")
+    print(f"Average Reward: {np.mean(total_rewards):.4f}")
