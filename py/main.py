@@ -16,10 +16,14 @@ def main():
     parser.add_argument("--play", action="store_true", help="Play/Evaluate the agent")
     parser.add_argument("--episodes", type=int, default=1000, help="Number of episodes to train")
     parser.add_argument("--num_games", type=int, default=None, help="Number of games to play/evaluate")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
     args = parser.parse_args()
 
     if args.train:
-        train_agent(num_episodes=args.episodes)
+        train_agent(
+            num_episodes=args.episodes,
+            batch_size=args.batch_size
+        )
         return
 
     if args.play:
