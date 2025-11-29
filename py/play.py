@@ -88,7 +88,7 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     # Re-evaluate num_games based on actual test_game_ids length
     num_games_to_evaluate = len(test_game_ids)
     print(f"Evaluating on {num_games_to_evaluate} games.")
-    
+    static_combos = get_all_combos(16, 4, device)
     for game_id in tqdm(test_game_ids):
         # Setup board
         idx = game_id_to_idx[game_id]
@@ -96,12 +96,15 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
         
         game_df_subset = test_df[test_df["Game ID"] == game_id]
         targets = torch.tensor(game_df_subset["Group Level"].values, dtype=torch.long, device=device)
-        combos = get_all_combos(16, 4, device)
-        
+        # shuffle data
+        perm = torch.randperm(16, device=device)
+        game_embeddings = game_embeddings[perm]
+        targets = targets[perm]
+
         board = BoardTensors(
             words=game_embeddings,
             group_labels=targets,
-            combos=combos
+            combos=static_combos
         )
         
         state = GameState.game_start(board, config)
