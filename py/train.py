@@ -87,7 +87,9 @@ def train_agent(
     steps_done = 0
     losses = []
     rewards = []
-    
+    # We need combos.
+    from utils import get_all_combos
+    static_combos = get_all_combos(16, 4, device)
     print("Starting training loop...")
     for i_episode in tqdm(range(num_episodes)):
         # Randomly select a game
@@ -140,17 +142,12 @@ def train_agent(
         perm = torch.randperm(16, device=device)
         game_embeddings = game_embeddings[perm]
         targets = targets[perm]
-        
-        combos = experiment.board_tensors[0].combos if experiment.board_tensors else get_device() # Wait, get_device returns device
-        # We need combos.
-        from utils import get_all_combos
-        combos = get_all_combos(16, 4, device)
-        
+               
         from game import BoardTensors
         board = BoardTensors(
             words=game_embeddings,
             group_labels=targets,
-            combos=combos
+            combos=static_combos
         )
 
         state = GameState.game_start(board, config)
