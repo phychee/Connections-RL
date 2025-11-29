@@ -22,6 +22,7 @@ def train_agent(
 ):
     device = get_device()
     print(f"Training on device: {device}")
+    print(f"saving to {save_path}")
     
     if epsilon_decay is None:
         decay_target = int(num_episodes * 0.8)
