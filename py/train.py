@@ -116,7 +116,7 @@ def train_agent(
         
         idx = experiment.game_id_to_idx[game_id]
         game_embeddings = experiment.embeddings[idx:idx+16]
-        
+               
         # Reconstruct board
         categories = torch.arange(4, device=device).repeat_interleave(4) # Dummy categories for board structure, actual labels are in dataset
         # Wait, BoardTensors needs group_labels.
@@ -135,6 +135,11 @@ def train_agent(
         
         # Get targets
         targets = torch.tensor(game_df["Group Level"].values, dtype=torch.long, device=device)
+        
+        # shuffle data
+        perm = torch.randperm(16, device=device)
+        game_embeddings = game_embeddings[perm]
+        targets = targets[perm]
         
         combos = experiment.board_tensors[0].combos if experiment.board_tensors else get_device() # Wait, get_device returns device
         # We need combos.

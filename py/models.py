@@ -101,6 +101,8 @@ class TransformerEncoderContextualizer(Contextualizer):
         """
         padding_mask = None
         if mask is not None:
+            if mask.dim() == 3:
+                mask = mask.squeeze(1)
             # Invert as our gamestate is true=valid, but in pytorch its true=ignore
             padding_mask = ~mask 
             all_padding_rows = padding_mask.all(dim=1)
