@@ -312,7 +312,7 @@ class ConnectionsDQN(Model):
             target_q_values = reward + gamma * next_max_q * (~finished)
             
         # Loss
-        loss = nn.MSELoss()(current_q_values, target_q_values)
+        loss = nn.SmoothL1Loss()(current_q_values, target_q_values)
         
         # Optimize
         self.optimizer.zero_grad()
