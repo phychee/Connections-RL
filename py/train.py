@@ -14,15 +14,20 @@ def train_agent(
     lr=1e-4,
     gamma=0.99,
     epsilon_start=1.0,
-    epsilon_end=0.1,
-    epsilon_decay=500,
+    epsilon_end=0.05,
+    epsilon_decay=None, # Unused, we use dynamic logic
     memory_capacity=10000,
     target_update_freq=100,
     save_path="connections_dqn.pt"
 ):
     device = get_device()
     print(f"Training on device: {device}")
-
+    
+    if epsilon_decay is None:
+        decay_target = int(num_episodes * 0.8)
+    else:
+        decay_target = epsilon_decay
+    
     # Load data
     df = get_clean_dataframe()
     
@@ -147,10 +152,10 @@ def train_agent(
         
         total_reward = 0
         
+        # Linear epsilon decay over 80% of training epochs
+        epsilon = epsilon_start - (min(1.0, (i_episode / decay_target)) * (epsilon_start - epsilon_end))
+        
         while True:
-            # Epsilon greedy
-            epsilon = epsilon_end + (epsilon_start - epsilon_end) * \
-                np.exp(-1. * steps_done / epsilon_decay)
             steps_done += 1
             
             # Select action
