@@ -241,9 +241,7 @@ def train_agent(
             
             if finished:
                 break
-        
-        rewards.append(total_reward)
-        
+                
         # Update Target Network
         if i_episode % target_update_freq == 0:
             target_net.load_state_dict(model.state_dict())
