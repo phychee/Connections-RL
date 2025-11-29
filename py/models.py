@@ -103,6 +103,9 @@ class TransformerEncoderContextualizer(Contextualizer):
         if mask is not None:
             # Invert as our gamestate is true=valid, but in pytorch its true=ignore
             padding_mask = ~mask 
+            all_padding_rows = padding_mask.all(dim=1)
+            if all_padding_rows.any():
+                padding_mask[all_padding_rows, 0] = False
         return self.encoder(word_embeddings, src_key_padding_mask=padding_mask)
 
 class SimpleGrouper(Grouper):
