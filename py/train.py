@@ -239,12 +239,11 @@ def train_agent(
                 loss = model.train_step(batch, target_net, gamma=gamma)
                 losses.append(loss)
             
+            if steps_done % 1000 == 0:
+                target_net.load_state_dict(model.state_dict())
+            
             if finished:
                 break
-                
-        # Update Target Network
-        if i_episode % target_update_freq == 0:
-            target_net.load_state_dict(model.state_dict())
         
         rewards.append(total_reward)
         
