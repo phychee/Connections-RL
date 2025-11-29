@@ -262,9 +262,6 @@ class ConnectionsDQN(Model):
         if q_values.dim() > 1:
             q_values = q_values.squeeze()
         
-        masked_q_values = q_values.clone()
-        if mask is not None:
-            masked_q_values[~mask] = -float('inf')
             
         if np.random.random() < epsilon:
             # exploration: choose randomly among (valid ones)
@@ -272,9 +269,15 @@ class ConnectionsDQN(Model):
                 valid_indices = torch.nonzero(mask).squeeze(1)
                 if len(valid_indices) > 0:
                     return int(valid_indices[torch.randint(len(valid_indices), (1,))].item())
+                else:
+                    # should never happen
+                    return 0
             return int(torch.randint(len(q_values), (1,)).item())
         else:
             # exploitation: choose the best one
+            masked_q_values = q_values.clone()
+            if mask is not None:
+                masked_q_values[~mask] = -float('inf')
             return int(torch.argmax(masked_q_values).item())
 
     def forward(self, state: dict, force_indices: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
