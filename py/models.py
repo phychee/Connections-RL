@@ -223,14 +223,22 @@ class ConnectionsDQN(Model):
         super().__init__()
         self.device = device
 
+        # projection layer since transformer has context issues
+        self.projection = nn.Sequential(
+            nn.Linear(384, 384),
+            nn.ReLU()
+        ).to(device)
         # TODO: better to precompute all word embeddings and to only map: word -> embedding here
         self.embedder = embedder
         self.contextualizer = contextualizer
         self.grouper = grouper
         self.scorer = scorer
         
+        
         self.optimizer = optim.Adam(
-            list(self.contextualizer.parameters()) + list(self.scorer.parameters()),
+            list(self.projection.parameters()) +
+            list(self.contextualizer.parameters()) +
+            list(self.scorer.parameters()),
             lr=lr
         )
 
@@ -283,7 +291,8 @@ class ConnectionsDQN(Model):
         num_groups_found = state['num_groups_found']
         word_mask = state.get('words_mask')
         # Contextualize
-        context_embeddings = self.contextualizer(word_embeddings, mask=word_mask)
+        projected_embeddings = self.projection(word_embeddings)
+        context_embeddings = self.contextualizer(projected_embeddings, mask=word_mask)
         
         # Group
         grouped_embeddings = self.grouper(16, context_embeddings) # (B, 1820, 4, D)
