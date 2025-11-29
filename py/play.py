@@ -122,21 +122,14 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
             }
             
             with torch.no_grad():
-                q_values, top_k_indices = model(state_dict)
-                # Map global mask to top-k
-                top_k_indices_flat = top_k_indices.squeeze(0).long()
-                valid_mask_k = state.actions_mask[top_k_indices_flat]
+                q_values, _ = model(state_dict)
+                q_values = q_values.squeeze(0) # (1820,)
                 
-                if valid_mask_k.sum() > 0:
-                    action_idx_in_k = model.select_action(q_values, top_k=model.k, mask=valid_mask_k, epsilon=0.0)
-                    action_idx = top_k_indices[0, action_idx_in_k].item()
-                else:
-                    # Fallback
-                    valid_indices = torch.nonzero(state.actions_mask).squeeze(1)
-                    if len(valid_indices) > 0:
-                        action_idx = valid_indices[torch.randint(len(valid_indices), (1,))].item()
-                    else:
-                        break
+                action_idx = model.select_action(
+                    q_values, 
+                    mask=state.actions_mask, 
+                    epsilon=0.0
+                )
             
             # Step
             next_state, reward, finished, info = env.make_guess(board, state, action_idx)

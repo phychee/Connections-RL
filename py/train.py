@@ -174,30 +174,14 @@ def train_agent(
             }
             
             # Model forward
-            q_values, top_k_indices = model(state_dict)
-            q_values = q_values.squeeze(0) # (K,)
+            q_values, _ = model(state_dict) # (1, 1820)
+            q_values = q_values.squeeze(0)  # (1820,)
             
-            # Select from top K (0..K-1)
-            # Map global mask to top-k
-            # state.actions_mask: (1820,)
-            # top_k_indices: (1, K)
-            
-            # We need to ensure top_k_indices is long
-            top_k_indices_flat = top_k_indices.squeeze(0).long()
-            valid_mask_k = state.actions_mask[top_k_indices_flat] # (K,)
-            
-            if valid_mask_k.sum() > 0:
-                action_idx_in_k = model.select_action(q_values, top_k=model.k, mask=valid_mask_k, epsilon=epsilon)
-                action_idx = top_k_indices[0, action_idx_in_k].item()
-            else:
-                # Fallback: Scorer failed to find any valid group in Top K
-                # Pick random valid action from global mask
-                valid_indices = torch.nonzero(state.actions_mask).squeeze(1)
-                if len(valid_indices) > 0:
-                    action_idx = valid_indices[torch.randint(len(valid_indices), (1,))].item()
-                else:
-                    # No valid actions left at all? Should be finished.
-                    break
+            action_idx = model.select_action(
+                q_values, 
+                mask=state.actions_mask, 
+                epsilon=epsilon
+            )
             
             # Step
             next_state, reward, finished, info = env.make_guess(board, state, action_idx)
