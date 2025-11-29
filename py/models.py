@@ -62,9 +62,9 @@ class Model(nn.Module):
         raise NotImplementedError
 
 class MiniLMEmbedding(Embedder):
-    def __init__(self, model_name='sentence-transformers/all-MiniLM-L6-v2'):
+    def __init__(self, model_name='sentence-transformers/all-MiniLM-L6-v2', device='cpu'):
         super().__init__()
-        self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name, device=device)
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.eval()

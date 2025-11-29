@@ -37,7 +37,7 @@ def train_agent(
     print(f"Training on {len(train_game_ids)} games.")
 
     # Initialize components
-    embedder = MiniLMEmbedding() # Moves to device internally if needed, but here it's CPU based mostly
+    embedder = MiniLMEmbedding(device=device) # Moves to device internally if needed, but here it's CPU based mostly
     # Note: MiniLMEmbedding uses CPU by default in the provided code, but we can move tensors to device later
     
     grouper = SimpleGrouper(device)
