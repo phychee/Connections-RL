@@ -38,15 +38,19 @@ class ReplayMemory:
             self.next_lives = torch.zeros((self.cap, *next_state['lives'].shape), device=self.device, dtype=next_state['lives'].dtype)
             self.next_num_groups_found = torch.zeros((self.cap, *next_state['num_groups_found'].shape), device=self.device, dtype=next_state['num_groups_found'].dtype)
             self.finished = torch.zeros((self.cap, *finished.shape), device=self.device, dtype=finished.dtype)
+            self.m = torch.zeros((self.cap, *state['words_mask'].shape), device=self.device, dtype=torch.bool)
+            self.next_m = torch.zeros((self.cap, *next_state['words_mask'].shape), device=self.device, dtype=torch.bool)
 
         self.s[self.idx] = state['board']
         self.lives[self.idx] = state['lives']
         self.num_groups_found[self.idx] = state['num_groups_found']
+        self.m[self.idx] = state['words_mask']
         self.a[self.idx] = action
         self.r[self.idx] = reward
         self.sp[self.idx] = next_state['board']
         self.next_lives[self.idx] = next_state['lives']
         self.next_num_groups_found[self.idx] = next_state['num_groups_found']
+        self.next_m[self.idx] = next_state['words_mask']
         self.finished[self.idx] = finished
 
         self.idx = (self.idx + 1) % self.cap
@@ -64,13 +68,15 @@ class ReplayMemory:
         state = {
             'board': self.s[sample_idx],
             'lives': self.lives[sample_idx],
-            'num_groups_found': self.num_groups_found[sample_idx]
+            'num_groups_found': self.num_groups_found[sample_idx],
+            'words_mask': self.m[sample_idx]
         }
         
         next_state = {
             'board': self.sp[sample_idx],
             'lives': self.next_lives[sample_idx],
-            'num_groups_found': self.next_num_groups_found[sample_idx]
+            'num_groups_found': self.next_num_groups_found[sample_idx],
+            'words_mask': self.next_m[sample_idx]
         }
 
         return (

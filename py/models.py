@@ -94,12 +94,16 @@ class TransformerEncoderContextualizer(Contextualizer):
         )
         self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=n_layers)
 
-    def forward(self, word_embeddings):
+    def forward(self, word_embeddings, mask=None):
         """
         Input: (B, 16, 384)
         Returns (B, 16, 384)
         """
-        return self.encoder(word_embeddings)
+        padding_mask = None
+        if mask is not None:
+            # Invert as our gamestate is true=valid, but in pytorch its true=ignore
+            padding_mask = ~mask 
+        return self.encoder(word_embeddings, src_key_padding_mask=padding_mask)
 
 class SimpleGrouper(Grouper):
 
@@ -272,9 +276,9 @@ class ConnectionsDQN(Model):
         word_embeddings = state['board']
         lives = state['lives']
         num_groups_found = state['num_groups_found']
-
+        word_mask = state.get('words_mask')
         # Contextualize
-        context_embeddings = self.contextualizer(word_embeddings)
+        context_embeddings = self.contextualizer(word_embeddings, mask=word_mask)
         
         # Group
         grouped_embeddings = self.grouper(16, context_embeddings) # (B, 1820, 4, D)
@@ -317,6 +321,9 @@ class ConnectionsDQN(Model):
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+        # Update step
         self.optimizer.step()
         
         return loss.item()

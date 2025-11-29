@@ -175,7 +175,8 @@ def train_agent(
             state_dict = {
                 'board': masked_embeddings.unsqueeze(0),
                 'lives': lives.unsqueeze(0),
-                'num_groups_found': num_groups_found.unsqueeze(0)
+                'num_groups_found': num_groups_found.unsqueeze(0),
+                'words_mask': state.words_mask.unsqueeze(0)
             }
             
             # Model forward
@@ -204,7 +205,8 @@ def train_agent(
             next_state_dict = {
                 'board': next_masked_embeddings,
                 'lives': next_lives,
-                'num_groups_found': next_num_groups_found
+                'num_groups_found': next_num_groups_found,
+                'words_mask': next_state.words_mask.unsqueeze(0)
             }
             
             # For memory push, we need unbatched tensors for the current state components
@@ -215,7 +217,8 @@ def train_agent(
             memory_state_dict = {
                 'board': masked_embeddings,
                 'lives': lives,
-                'num_groups_found': num_groups_found
+                'num_groups_found': num_groups_found,
+                'words_mask': state.words_mask
             }
             
             memory.push(
