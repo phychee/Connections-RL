@@ -321,12 +321,13 @@ class ConnectionsDQN(Model):
         
         # Next Q-values
         with torch.no_grad():
+            # Double dqn using online model for best action
+            next_state_actions = self.forward(next_state)[0].argmax(dim=1, keepdim=True)
             # Use target_net for next state Q-values
             # We don't force indices here, we just want the best of Top K
             next_q_values, _ = target_net(next_state)
             # Max next Q-value among the Top K
-            next_max_q, _ = next_q_values.max(dim=1, keepdim=True)
-            
+            next_max_q = next_q_values.gather(1, next_state_actions)
             target_q_values = reward + gamma * next_max_q * (~finished)
             
         # Loss
