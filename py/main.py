@@ -38,7 +38,7 @@ def main():
         train_agent(
             num_episodes=args.episodes,
             batch_size=args.batch_size,
-            save_path=save_pat
+            save_path=save_path
         )
         return
 
