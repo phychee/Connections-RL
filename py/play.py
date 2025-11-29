@@ -121,7 +121,8 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
             state_dict = {
                 'board': masked_embeddings.unsqueeze(0),
                 'lives': lives.unsqueeze(0),
-                'num_groups_found': num_groups_found.unsqueeze(0)
+                'num_groups_found': num_groups_found.unsqueeze(0),
+                'words_mask': state.words_mask.unsqueeze(0)
             }
             
             with torch.no_grad():
