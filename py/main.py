@@ -44,7 +44,7 @@ def main():
 
     if args.play:
         from play import evaluate_agent
-        evaluate_agent(num_games=args.num_games)
+        evaluate_agent(model_path=save_path, num_games=args.num_games)
         return
 
 if __name__ == "__main__":
