@@ -86,6 +86,11 @@ class Game:
             new_found_groups = state.found_groups.clone()
             new_found_groups[group_idx] = True
 
+            # If we found 3 groups, the last one is implicitly found
+            if new_found_groups.sum() >= 3:
+                new_found_groups[:] = True
+                new_words_mask[:] = False
+
             # Update the action mask to remove actions that use words that we already used
             # and the action we took at this step
             new_actions_mask = self._remove_used_action(board, state, action_id)
