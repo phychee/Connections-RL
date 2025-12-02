@@ -81,9 +81,93 @@ class MiniLMEmbedding(Embedder):
     def encode(self, words: list[str]) -> torch.Tensor:
         return self.forward(words)
 
+class GloveEmbedding(Embedder):
+    def __init__(self, model_name='glove-wiki-gigaword-100', device='cpu'):
+        super().__init__()
+        self.device = device
+        self.embeddings = {}
+        self.vector_size = 100
+        
+        import os
+        import numpy as np
+        import urllib.request
+        import zipfile
+        import shutil
+        
+        # Project root is parent of the directory containing this file (py/)
+        # Assuming models.py is in py/ folder
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_dir = os.path.join(project_root, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        glove_filename = f"{model_name}.txt"
+        glove_path = os.path.join(cache_dir, glove_filename)
+        
+        if not os.path.exists(glove_path):
+            print(f"GloVe vectors not found at {glove_path}")
+            print(f"Downloading {model_name}...")
+            
+            # URL for GloVe 6B (which contains 100d)
+            url = "https://nlp.stanford.edu/data/glove.6B.zip"
+            zip_path = os.path.join(cache_dir, "glove.6B.zip")
+            
+            try:
+                # Download with progress indication would be nice, but simple for now
+                with urllib.request.urlopen(url) as response, open(zip_path, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+                
+                print("Download complete. Extracting...")
+                
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    # The zip contains glove.6B.100d.txt
+                    # We map model_name to the file inside zip
+                    # For 'glove-wiki-gigaword-100', it corresponds to glove.6B.100d.txt
+                    target_file_in_zip = "glove.6B.100d.txt"
+                    zip_ref.extract(target_file_in_zip, cache_dir)
+                
+                # Rename to match expected name
+                extracted_path = os.path.join(cache_dir, target_file_in_zip)
+                os.rename(extracted_path, glove_path)
+                
+                # Cleanup
+                os.remove(zip_path)
+                print(f"GloVe vectors ready at {glove_path}")
+                
+            except Exception as e:
+                print(f"Failed to download/extract GloVe: {e}")
+                # Clean up partial files
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+                return
+
+        print(f"Loading GloVe from {glove_path}...")
+        with open(glove_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                values = line.split()
+                word = values[0]
+                vector = np.asarray(values[1:], "float32")
+                self.embeddings[word] = vector
+        print("GloVe loaded.")
+
+    def forward(self, words: list[str]) -> torch.Tensor:
+        embeddings = []
+        for word in words:
+            word_lower = word.lower()
+            if word_lower in self.embeddings:
+                vec = self.embeddings[word_lower]
+            else:
+                # OOV: use zero vector
+                vec = np.zeros(self.vector_size)
+            embeddings.append(vec)
+        
+        return torch.tensor(np.array(embeddings), dtype=torch.float32, device=self.device)
+
+    def encode(self, words: list[str]) -> torch.Tensor:
+        return self.forward(words)
+
 class TransformerEncoderContextualizer(Contextualizer):
 
-    def __init__(self, d_size=384, n_layers=4, n_head=8, ff_dim=1024, dropout=0.1):
+    def __init__(self, d_size=100, n_layers=4, n_head=4, ff_dim=1024, dropout=0.1):
         super().__init__()
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_size,
@@ -99,8 +183,8 @@ class TransformerEncoderContextualizer(Contextualizer):
 
     def forward(self, word_embeddings, mask=None):
         """
-        Input: (B, 16, 384)
-        Returns (B, 16, 384)
+        Input: (B, 16, 100)
+        Returns (B, 16, 100)
         """
         padding_mask = None
         if mask is not None:
@@ -125,8 +209,8 @@ class SimpleGrouper(Grouper):
 
     def forward(self, n:int, embeddings: torch.Tensor) -> torch.Tensor:
         """
-        Input: (B, 16, 384)
-        Output: (B, 1820, 4, 384)
+        Input: (B, 16, 100)
+        Output: (B, 1820, 4, 100)
         """
         combos = get_all_combos(n, 4, self.device)
         # Reshape combos so they are batch-friendly
@@ -140,7 +224,7 @@ class RelationNetworkScorer(ActionScorer):
 
     def __init__(self,
                  device,
-                 d_model: int = 384,
+                 d_model: int = 100,
                  hidden_dim: int = 256,
                  state_dim: int = 2):
         super().__init__()
@@ -167,7 +251,7 @@ class RelationNetworkScorer(ActionScorer):
 
     def forward(self, group_embeddings, state_info):
         """
-        group_embeddings: (Batch, A, 4, 384)
+        group_embeddings: (Batch, A, 4, 100)
         state_info: (Batch, state_dim)
         returns (B, A) score
         """
@@ -232,7 +316,7 @@ class ConnectionsDQN(Model):
 
         # projection layer since transformer has context issues
         self.projection = nn.Sequential(
-            nn.Linear(384, 384),
+            nn.Linear(100, 100),
             nn.ReLU()
         ).to(device)
         # TODO: better to precompute all word embeddings and to only map: word -> embedding here

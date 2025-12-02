@@ -5,7 +5,7 @@ from dataclasses import replace
 from config import GameConfig
 from utils import get_device, get_clean_dataframe, get_all_combos
 from dataset import ConnectionsData
-from models import ConnectionsDQN, MiniLMEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer
+from models import ConnectionsDQN, MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer
 from game import Game, GameConfig, GameState, BoardTensors
 from experiment import Experiment
 
@@ -26,7 +26,8 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     print(f"Evaluating on {len(test_game_ids)} games.")
     
     # Initialize components
-    embedder = MiniLMEmbedding()
+    # embedder = MiniLMEmbedding()
+    embedder = GloveEmbedding(device=device)
     grouper = SimpleGrouper(device)
     # We need to initialize the model structure to load weights
     # Note: We must match the architecture used in train.py

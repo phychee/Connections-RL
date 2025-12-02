@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 from config import GameConfig
 from utils import get_device, get_clean_dataframe
-from models import MiniLMEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer, ConnectionsDQN
+from models import MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer, ConnectionsDQN
 from game import GameState, Game
 from experiment import Experiment
 from replay import ReplayMemory
@@ -38,7 +38,8 @@ def train_agent(
     print(f"Training on {len(train_game_ids)} games.")
 
     # Initialize components
-    embedder = MiniLMEmbedding(device=device) # Moves to device internally if needed, but here it's CPU based mostly
+    # embedder = MiniLMEmbedding(device=device)
+    embedder = GloveEmbedding(device=device)
     # Note: MiniLMEmbedding uses CPU by default in the provided code, but we can move tensors to device later
     
     grouper = SimpleGrouper(device)
