@@ -241,11 +241,12 @@ class ConnectionsDQN(Model):
         self.grouper = grouper
         self.scorer = scorer
         
-        
+        params = list(self.projection.parameters()) + list(self.scorer.parameters())
+        if self.contextualizer is not None:
+             params += list(self.contextualizer.parameters())
+
         self.optimizer = optim.Adam(
-            list(self.projection.parameters()) +
-            list(self.contextualizer.parameters()) +
-            list(self.scorer.parameters()),
+            params,
             lr=lr
         )
 
@@ -301,11 +302,12 @@ class ConnectionsDQN(Model):
         num_groups_found = state['num_groups_found']
         word_mask = state.get('words_mask')
         # Contextualize
-        projected_embeddings = self.projection(word_embeddings)
-        context_embeddings = self.contextualizer(projected_embeddings, mask=word_mask)
+        # projected_embeddings = self.projection(word_embeddings)
+        # context_embeddings = self.contextualizer(projected_embeddings, mask=word_mask)
         
         # Group
-        grouped_embeddings = self.grouper(16, context_embeddings) # (B, 1820, 4, D)
+        # grouped_embeddings = self.grouper(16, context_embeddings)
+        grouped_embeddings = self.grouper(16, word_embeddings) # (B, 1820, 4, D)
         
         # Construct state info
         # lives: (B,) -> (B, 1)

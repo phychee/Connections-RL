@@ -36,12 +36,12 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     # model = ConnectionsDQN(...)
     
     # Let's assume default parameters for now, but ideally these should be in config
-    contextualizer = TransformerEncoderContextualizer().to(device)
+    # contextualizer = TransformerEncoderContextualizer().to(device)
     scorer = RelationNetworkScorer(device).to(device)
     
     model = ConnectionsDQN(
         embedder=embedder,
-        contextualizer=contextualizer,
+        contextualizer=None,
         grouper=grouper,
         scorer=scorer,
         device=device

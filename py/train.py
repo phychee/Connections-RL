@@ -42,12 +42,12 @@ def train_agent(
     # Note: MiniLMEmbedding uses CPU by default in the provided code, but we can move tensors to device later
     
     grouper = SimpleGrouper(device)
-    contextualizer = TransformerEncoderContextualizer().to(device)
+    # contextualizer = TransformerEncoderContextualizer().to(device)
     scorer = RelationNetworkScorer(device).to(device)
     
     model = ConnectionsDQN(
         embedder=embedder,
-        contextualizer=contextualizer,
+        contextualizer=None,
         grouper=grouper,
         scorer=scorer,
         lr=lr,
@@ -57,7 +57,7 @@ def train_agent(
     # Target Network
     target_net = ConnectionsDQN(
         embedder=embedder, # Shared embedder (frozen)
-        contextualizer=TransformerEncoderContextualizer().to(device), # New instance
+        contextualizer=None,
         grouper=grouper, # Shared grouper (no params)
         scorer=RelationNetworkScorer(device).to(device), # New instance
         lr=lr,
