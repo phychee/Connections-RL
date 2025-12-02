@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 from config import GameConfig
 from utils import get_device, get_clean_dataframe
-from models import MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer, ConnectionsDQN
+from models import MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, CosineSimilarityScorer, ConnectionsDQN
 from game import GameState, Game
 from experiment import Experiment
 from replay import ReplayMemory
@@ -44,13 +44,14 @@ def train_agent(
     
     grouper = SimpleGrouper(device)
     # contextualizer = TransformerEncoderContextualizer().to(device)
-    scorer = RelationNetworkScorer(device).to(device)
+    scorer = CosineSimilarityScorer(device).to(device)
     
     model = ConnectionsDQN(
         embedder=embedder,
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
+        k=200,
         lr=lr,
         device=device
     ).to(device)
@@ -60,7 +61,8 @@ def train_agent(
         embedder=embedder, # Shared embedder (frozen)
         contextualizer=None,
         grouper=grouper, # Shared grouper (no params)
-        scorer=RelationNetworkScorer(device).to(device), # New instance
+        scorer=CosineSimilarityScorer(device).to(device), # New instance
+        k=200,
         lr=lr,
         device=device
     ).to(device)
@@ -184,17 +186,25 @@ def train_agent(
             }
             
             # Model forward
-            q_values, _ = model(state_dict) # (1, 1820)
-            q_values = q_values.squeeze(0)  # (1820,)
+            q_values, top_k_indices = model(state_dict) # (1, K), (1, K)
+            q_values = q_values.squeeze(0)  # (K,)
+            top_k_indices = top_k_indices.squeeze(0) # (K,)
+            
+            # Filter mask for Top K
+            # state.actions_mask is (1820,)
+            top_k_mask = state.actions_mask[top_k_indices] # (K,)
             
             action_idx = model.select_action(
                 q_values, 
-                mask=state.actions_mask, 
+                mask=top_k_mask, 
                 epsilon=epsilon
             )
             
+            # Map rank (action_idx) to actual group index
+            actual_group_idx = top_k_indices[action_idx].item()
+            
             # Step
-            next_state, reward, finished, info = env.make_guess(board, state, action_idx)
+            next_state, reward, finished, info = env.make_guess(board, state, actual_group_idx)
             
             total_reward += reward.item()
             
@@ -227,7 +237,7 @@ def train_agent(
             
             memory.push(
                 memory_state_dict,
-                torch.tensor([action_idx], device=device),
+                torch.tensor([action_idx], device=device), # Store RANK index
                 torch.tensor([reward], device=device),
                 next_state_dict,
                 torch.tensor([finished], device=device, dtype=torch.bool)

@@ -5,7 +5,7 @@ from dataclasses import replace
 from config import GameConfig
 from utils import get_device, get_clean_dataframe, get_all_combos
 from dataset import ConnectionsData
-from models import ConnectionsDQN, MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, RelationNetworkScorer
+from models import ConnectionsDQN, MiniLMEmbedding, GloveEmbedding, SimpleGrouper, TransformerEncoderContextualizer, CosineSimilarityScorer
 from game import Game, GameConfig, GameState, BoardTensors
 from experiment import Experiment
 
@@ -29,22 +29,15 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     # embedder = MiniLMEmbedding()
     embedder = GloveEmbedding(device=device)
     grouper = SimpleGrouper(device)
-    # We need to initialize the model structure to load weights
-    # Note: We must match the architecture used in train.py
-    # In train.py:
-    # contextualizer = TransformerEncoderContextualizer(d_model=384, nhead=4, num_layers=2).to(device)
-    # scorer = RelationNetworkScorer(device, d_model=384, hidden_dim=256).to(device)
-    # model = ConnectionsDQN(...)
     
-    # Let's assume default parameters for now, but ideally these should be in config
-    # contextualizer = TransformerEncoderContextualizer().to(device)
-    scorer = RelationNetworkScorer(device).to(device)
+    scorer = CosineSimilarityScorer(device).to(device)
     
     model = ConnectionsDQN(
         embedder=embedder,
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
+        k=200,
         device=device
     ).to(device)
     
@@ -127,17 +120,24 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
             }
             
             with torch.no_grad():
-                q_values, _ = model(state_dict)
-                q_values = q_values.squeeze(0) # (1820,)
+                q_values, top_k_indices = model(state_dict) # (1, K), (1, K)
+                q_values = q_values.squeeze(0) # (K,)
+                top_k_indices = top_k_indices.squeeze(0) # (K,)
+                
+                # Filter mask for Top K
+                top_k_mask = state.actions_mask[top_k_indices] # (K,)
                 
                 action_idx = model.select_action(
                     q_values, 
-                    mask=state.actions_mask, 
+                    mask=top_k_mask, 
                     epsilon=0.0
                 )
+                
+                # Map rank to actual group index
+                actual_group_idx = top_k_indices[action_idx].item()
             
             # Step
-            next_state, reward, finished, info = env.make_guess(board, state, action_idx)
+            next_state, reward, finished, info = env.make_guess(board, state, actual_group_idx)
             
             # Safety Net: If action was illegal, force remove it from actions_mask
             # This prevents infinite loops if the mask logic gets out of sync
@@ -145,7 +145,7 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
                 # We need to modify the state in-place or create a new one
                 # Since GameState is frozen, we use replace
                 new_actions_mask = next_state.actions_mask.clone()
-                new_actions_mask[action_idx] = False
+                new_actions_mask[actual_group_idx] = False
                 next_state = replace(next_state, actions_mask=new_actions_mask)
             
             total_reward += reward.item()

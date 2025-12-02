@@ -220,39 +220,16 @@ class SimpleGrouper(Grouper):
     def group(self, embeddings: torch.Tensor) -> torch.Tensor:
          return self.forward(embeddings.shape[1], embeddings)
 
-class RelationNetworkScorer(ActionScorer):
-
-    def __init__(self,
-                 device,
-                 d_model: int = 100,
-                 hidden_dim: int = 256,
-                 state_dim: int = 2):
+class CosineSimilarityScorer(ActionScorer):
+    def __init__(self, device):
         super().__init__()
         self.device = device
-        
-        # Relation module: takes 2 embeddings (2*D) -> hidden_dim
-        self.g = nn.Sequential(
-            nn.Linear(2 * d_model, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-        
-        # Scoring module: takes sum of relations (hidden_dim) + state_info (state_dim) -> 1
-        self.f = nn.Sequential(
-            nn.Linear(hidden_dim + state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        
         self.pair_combos = get_all_combos(4, 2, device) # (6, 2)
 
-    def forward(self, group_embeddings, state_info):
+    def forward(self, group_embeddings, state_info=None):
         """
-        group_embeddings: (Batch, A, 4, 100)
-        state_info: (Batch, state_dim)
+        group_embeddings: (Batch, A, 4, D)
+        state_info: Unused
         returns (B, A) score
         """
         B, A, _, D = group_embeddings.shape
@@ -261,20 +238,18 @@ class RelationNetworkScorer(ActionScorer):
         
         # Create pairs
         group_pairs = flat_embeddings[:, self.pair_combos] # (B*A, 6, 2, D)
-        group_pairs = group_pairs.reshape(B * A, 6, 2 * D) # (B*A, 6, 2*D)
         
-        # Relational reasoning
-        relations = self.g(group_pairs) # (B*A, 6, hidden_dim)
-        relations_sum = relations.sum(dim=1) # (B*A, hidden_dim)
+        # Calculate Cosine Similarity for each pair
+        # (B*A, 6, 2, D) -> split into (B*A, 6, D) and (B*A, 6, D)
+        vec1 = group_pairs[:, :, 0, :]
+        vec2 = group_pairs[:, :, 1, :]
         
-        # Concatenate state info
-        # state_info: (B, state_dim) -> (B, 1, state_dim) -> (B, A, state_dim) -> (B*A, state_dim)
-        state_info_expanded = state_info.unsqueeze(1).expand(-1, A, -1).reshape(B * A, -1)
+        # Cosine Similarity = (v1 . v2) / (|v1| * |v2|)
+        # Assume embeddings are NOT normalized, so we normalize them
+        cos_sim = nn.functional.cosine_similarity(vec1, vec2, dim=2) # (B*A, 6)
         
-        combined = torch.cat([relations_sum, state_info_expanded], dim=1) # (B*A, hidden_dim + state_dim)
-
-        # Get the scores
-        scores = self.f(combined) # (B*A, 1)
+        # Sum of cosine similarities
+        scores = cos_sim.sum(dim=1) # (B*A)
         scores = scores.view(B, A) # (B, A)
 
         return scores
@@ -308,26 +283,41 @@ class ConnectionsDQN(Model):
                  contextualizer: Contextualizer,
                  grouper: Grouper,
                  scorer: ActionScorer,
-                 k: int = 1820, # unused, kept for compatibility
+                 k: int = 200,
                  lr=1e-4,
                  device='cpu'):
         super().__init__()
         self.device = device
+        self.k = k
 
         # projection layer since transformer has context issues
         self.projection = nn.Sequential(
             nn.Linear(100, 100),
             nn.ReLU()
         ).to(device)
-        # TODO: better to precompute all word embeddings and to only map: word -> embedding here
+        
         self.embedder = embedder
         self.contextualizer = contextualizer
         self.grouper = grouper
         self.scorer = scorer
         
-        params = list(self.projection.parameters()) + list(self.scorer.parameters())
+        # Policy Network to choose among Top K
+        self.policy = PolicyNetwork(k=k, state_dim=2).to(device)
+        
+        # We only optimize the policy network
+        params = list(self.policy.parameters())
         if self.contextualizer is not None:
              params += list(self.contextualizer.parameters())
+        # Projection? Maybe not needed if we trust raw embeddings for similarity.
+        # But let's keep it trainable if we want to adapt embeddings?
+        # User said "fixed method that takes their embeddings as input".
+        # So we should probably NOT train projection if we want pure fixed similarity.
+        # But if we want to "learn to choose", we might want to adapt embeddings slightly?
+        # Let's stick to strict interpretation: Fixed method on embeddings.
+        # So we should probably freeze embedder and NOT use projection for scoring?
+        # Or use projection but freeze it?
+        # Let's keep projection trainable for now as "preprocessing" but the SCORER is fixed.
+        params += list(self.projection.parameters())
 
         self.optimizer = optim.Adam(
             params,
@@ -336,25 +326,16 @@ class ConnectionsDQN(Model):
 
     def select_action(self,
                       q_values: torch.Tensor,
-                      top_k: int = 1820, # unused
+                      top_k: int = 20, # unused
                       mask: Optional[torch.BoolTensor] = None,
                       epsilon: float = 0.0) -> int:
         """
-        q_values: (1820, ) or (1, 1820) tensor of Q-scores for the TOP K actions
-        mask: (1820, ) boolean tensor indicating a valid action among the top K
-              Wait, the mask passed from outside is usually (1820,).
-              We need to handle masking differently now.
-              The mask should be applied BEFORE top-k if possible, or we need to map the mask to top-k.
-              
-              Actually, for simplicity in this refactor step, let's assume the policy selects among the top K,
-              and we handle validity checks in the environment (illegal move penalty).
-              Or we can pass the mask for the top K indices.
+        q_values: (K, )
+        mask: (K, ) boolean tensor indicating a valid action among the top K
         """
-        # Input
         if q_values.dim() > 1:
             q_values = q_values.squeeze()
         
-            
         if np.random.random() < epsilon:
             # exploration: choose randomly among (valid ones)
             if mask is not None:
@@ -362,7 +343,6 @@ class ConnectionsDQN(Model):
                 if len(valid_indices) > 0:
                     return int(valid_indices[torch.randint(len(valid_indices), (1,))].item())
                 else:
-                    # should never happen
                     return 0
             return int(torch.randint(len(q_values), (1,)).item())
         else:
@@ -374,9 +354,7 @@ class ConnectionsDQN(Model):
 
     def forward(self, state: dict, force_indices: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Passes the word embeddings through the module to get Q-scores
         state: dict {'board': (B, 16, D), 'lives': (B, 1), 'num_groups_found': (B, 1)}
-        force_indices: (B, 1) - Optional indices to force into the Top K (for training)
         returns: 
             q_values: (B, K) - Q-values for the top K groups
             top_k_indices: (B, K) - Original indices (0-1819) of the top K groups
@@ -384,46 +362,45 @@ class ConnectionsDQN(Model):
         word_embeddings = state['board']
         lives = state['lives']
         num_groups_found = state['num_groups_found']
-        word_mask = state.get('words_mask')
-        # Contextualize
-        # projected_embeddings = self.projection(word_embeddings)
-        # context_embeddings = self.contextualizer(projected_embeddings, mask=word_mask)
         
-        # Group
-        # grouped_embeddings = self.grouper(16, context_embeddings)
+        # 1. Group
         grouped_embeddings = self.grouper(16, word_embeddings) # (B, 1820, 4, D)
         
+        # 2. Score all 1820 groups with Fixed Scorer
+        with torch.no_grad(): # Scorer is fixed
+            all_scores = self.scorer(grouped_embeddings) # (B, 1820)
+        
+        # 3. Sort and get Top K
+        # We want the indices of the top K scores
+        top_k_scores, top_k_indices = torch.topk(all_scores, self.k, dim=1) # (B, K)
+        
+        # 4. Policy Network
         # Construct state info
-        # lives: (B,) -> (B, 1)
-        # num_groups_found: (B,) -> (B, 1)
-        if lives.dim() == 1:
-            lives = lives.unsqueeze(1)
-        if num_groups_found.dim() == 1:
-            num_groups_found = num_groups_found.unsqueeze(1)
-            
+        if lives.dim() == 1: lives = lives.unsqueeze(1)
+        if num_groups_found.dim() == 1: num_groups_found = num_groups_found.unsqueeze(1)
         state_info = torch.cat([lives, num_groups_found], dim=1) # (B, 2)
         
-        # Score all 1820 groups
-        all_scores = self.scorer(grouped_embeddings, state_info) # (B, 1820)
+        q_values = self.policy(top_k_scores, state_info) # (B, K)
         
-        return all_scores, None
+        return q_values, top_k_indices
 
     def train_step(self, batch, target_net, gamma=0.99):
         state, action, reward, next_state, finished = batch
         
         # Current Q-values
+        # action here is the RANK index (0 to K-1)
         q_values, _ = self.forward(state)
         current_q_values = q_values.gather(1, action.long())
         
         # Next Q-values
         with torch.no_grad():
-            # Double dqn using online model for best action
-            next_state_actions = self.forward(next_state)[0].argmax(dim=1, keepdim=True)
-            # Use target_net for next state Q-values
-            # We don't force indices here, we just want the best of Top K
-            next_q_values, _ = target_net(next_state)
-            # Max next Q-value among the Top K
-            next_max_q = next_q_values.gather(1, next_state_actions)
+            # Double dqn
+            next_q_values_online, _ = self.forward(next_state)
+            next_actions = next_q_values_online.argmax(dim=1, keepdim=True)
+            
+            next_q_values_target, _ = target_net(next_state)
+            next_max_q = next_q_values_target.gather(1, next_actions)
+            
             target_q_values = reward + gamma * next_max_q * (~finished)
             
         # Loss
@@ -432,9 +409,7 @@ class ConnectionsDQN(Model):
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
-        # Gradient clipping
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-        # Update step
         self.optimizer.step()
         
         return loss.item()
