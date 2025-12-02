@@ -92,7 +92,10 @@ class TransformerEncoderContextualizer(Contextualizer):
             dropout=dropout,
             batch_first=True
         )
-        self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=n_layers)
+        self.encoder = nn.TransformerEncoder(
+            self.encoder_layer,
+            num_layers=n_layers,
+            enable_nested_tensor=False)
 
     def forward(self, word_embeddings, mask=None):
         """
@@ -103,11 +106,15 @@ class TransformerEncoderContextualizer(Contextualizer):
         if mask is not None:
             if mask.dim() == 3:
                 mask = mask.squeeze(1)
-            # Invert as our gamestate is true=valid, but in pytorch its true=ignore
-            padding_mask = ~mask 
-            all_padding_rows = padding_mask.all(dim=1)
+            
+            bool_mask = ~mask
+            all_padding_rows = bool_mask.all(dim=1)
             if all_padding_rows.any():
-                padding_mask[all_padding_rows, 0] = False
+                bool_mask[all_padding_rows, 0] = False
+            # Make it faster on MPS without nested tensor
+            # 0.0 = Keep, -inf = Ignore
+            padding_mask = torch.zeros_like(bool_mask, dtype=torch.float)
+            padding_mask.masked_fill_(bool_mask, float('-inf'))
         return self.encoder(word_embeddings, src_key_padding_mask=padding_mask)
 
 class SimpleGrouper(Grouper):
