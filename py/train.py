@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 from config import GameConfig
 from utils import get_device, get_clean_dataframe
@@ -51,7 +52,7 @@ def train_agent(
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
-        k=200,
+        k=500,
         lr=lr,
         device=device
     ).to(device)
@@ -62,7 +63,7 @@ def train_agent(
         contextualizer=None,
         grouper=grouper, # Shared grouper (no params)
         scorer=CosineSimilarityScorer(device).to(device), # New instance
-        k=200,
+        k=500,
         lr=lr,
         device=device
     ).to(device)
@@ -88,9 +89,15 @@ def train_agent(
     env = Game()
     config = GameConfig()
 
-    steps_done = 0
-    losses = []
     rewards = []
+    losses = []
+    
+    # Metrics for plotting (matching logs)
+    log_episodes = []
+    log_avg_rewards = []
+    log_avg_losses = []
+    
+    steps_done = 0
     # We need combos.
     from utils import get_all_combos
     static_combos = get_all_combos(16, 4, device)
@@ -194,6 +201,51 @@ def train_agent(
             # state.actions_mask is (1820,)
             top_k_mask = state.actions_mask[top_k_indices] # (K,)
             
+            # Check if we have ANY valid moves in Top K
+            if not top_k_mask.any():
+                # No valid moves in Top K!
+                # This causes infinite loop if we don't handle it.
+                # Penalize and end episode.
+                reward = torch.tensor([-10.0], device=device)
+                finished = True
+                
+                # Store transition (state -> action 0 -> reward -10 -> next_state=state -> finished)
+                # We just use action 0 as a placeholder since we didn't take a real action
+                action_idx = 0
+                
+                # We need to construct next_state_dict for memory
+                # Since we didn't step env, next_state is same as state
+                next_masked_embeddings = board.words.clone()
+                next_masked_embeddings[~state.words_mask] = 0
+                
+                next_lives = lives # Unchanged
+                next_num_groups_found = num_groups_found # Unchanged
+                
+                next_state_dict = {
+                    'board': next_masked_embeddings,
+                    'lives': next_lives,
+                    'num_groups_found': next_num_groups_found,
+                    'words_mask': state.words_mask.unsqueeze(0)
+                }
+                
+                memory_state_dict = {
+                    'board': masked_embeddings,
+                    'lives': lives,
+                    'num_groups_found': num_groups_found,
+                    'words_mask': state.words_mask
+                }
+                
+                memory.push(
+                    memory_state_dict,
+                    torch.tensor([action_idx], device=device),
+                    torch.tensor([reward], device=device),
+                    next_state_dict,
+                    torch.tensor([finished], device=device, dtype=torch.bool)
+                )
+                
+                total_reward += reward.item()
+                break
+
             action_idx = model.select_action(
                 q_values, 
                 mask=top_k_mask, 
@@ -262,11 +314,36 @@ def train_agent(
         if (i_episode + 1) % 10 == 0:
             avg_reward = np.mean(rewards[-10:])
             avg_loss = np.mean(losses[-100:]) if losses else 0
+            
+            log_episodes.append(i_episode + 1)
+            log_avg_rewards.append(avg_reward)
+            log_avg_losses.append(avg_loss)
+            
             print(f"Episode {i_episode+1}, Avg Reward: {avg_reward:.2f}, Avg Loss: {avg_loss:.4f}, Epsilon: {epsilon:.2f}")
             
     # Save model
     torch.save(model.state_dict(), save_path)
     print(f"Model saved to {save_path}")
+
+    # Plotting
+    # Plotting
+    plt.figure(figsize=(10, 5))
+    plt.plot(log_episodes, log_avg_rewards)
+    plt.title('Average Reward (Past 10 Episodes)')
+    plt.xlabel('Episode')
+    plt.ylabel('Avg Reward')
+    plt.savefig('training_rewards.png')
+    plt.close()
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(log_episodes, log_avg_losses)
+    plt.title('Average Loss (Past 100 Steps)')
+    plt.xlabel('Episode')
+    plt.ylabel('Avg Loss')
+    plt.savefig('training_losses.png')
+    plt.close()
+    
+    return model
 
 if __name__ == "__main__":
     train_agent()

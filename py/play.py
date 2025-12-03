@@ -37,7 +37,7 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
-        k=200,
+        k=500,
         device=device
     ).to(device)
     
@@ -127,6 +127,13 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
                 # Filter mask for Top K
                 top_k_mask = state.actions_mask[top_k_indices] # (K,)
                 
+                # Check if we have ANY valid moves in Top K
+                if not top_k_mask.any():
+                    # No valid moves in Top K!
+                    # This causes infinite loop if we don't handle it.
+                    # End game.
+                    break
+
                 action_idx = model.select_action(
                     q_values, 
                     mask=top_k_mask, 

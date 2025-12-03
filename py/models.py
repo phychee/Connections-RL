@@ -232,27 +232,22 @@ class CosineSimilarityScorer(ActionScorer):
         state_info: Unused
         returns (B, A) score
         """
-        B, A, _, D = group_embeddings.shape
+        # Optimized implementation to avoid large memory allocation
+        # Pairs: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
         
-        flat_embeddings = group_embeddings.view(-1, 4, D) # (B*A, 4, D)
+        w0 = group_embeddings[:, :, 0, :] # (B, A, D)
+        w1 = group_embeddings[:, :, 1, :]
+        w2 = group_embeddings[:, :, 2, :]
+        w3 = group_embeddings[:, :, 3, :]
         
-        # Create pairs
-        group_pairs = flat_embeddings[:, self.pair_combos] # (B*A, 6, 2, D)
+        s01 = nn.functional.cosine_similarity(w0, w1, dim=2)
+        s02 = nn.functional.cosine_similarity(w0, w2, dim=2)
+        s03 = nn.functional.cosine_similarity(w0, w3, dim=2)
+        s12 = nn.functional.cosine_similarity(w1, w2, dim=2)
+        s13 = nn.functional.cosine_similarity(w1, w3, dim=2)
+        s23 = nn.functional.cosine_similarity(w2, w3, dim=2)
         
-        # Calculate Cosine Similarity for each pair
-        # (B*A, 6, 2, D) -> split into (B*A, 6, D) and (B*A, 6, D)
-        vec1 = group_pairs[:, :, 0, :]
-        vec2 = group_pairs[:, :, 1, :]
-        
-        # Cosine Similarity = (v1 . v2) / (|v1| * |v2|)
-        # Assume embeddings are NOT normalized, so we normalize them
-        cos_sim = nn.functional.cosine_similarity(vec1, vec2, dim=2) # (B*A, 6)
-        
-        # Sum of cosine similarities
-        scores = cos_sim.sum(dim=1) # (B*A)
-        scores = scores.view(B, A) # (B, A)
-
-        return scores
+        return s01 + s02 + s03 + s12 + s13 + s23
 
 class PolicyNetwork(nn.Module):
     def __init__(self, k: int = 20, state_dim: int = 2, hidden_dim: int = 128):
@@ -283,7 +278,7 @@ class ConnectionsDQN(Model):
                  contextualizer: Contextualizer,
                  grouper: Grouper,
                  scorer: ActionScorer,
-                 k: int = 200,
+                 k: int = 500,
                  lr=1e-4,
                  device='cpu'):
         super().__init__()
@@ -363,12 +358,15 @@ class ConnectionsDQN(Model):
         lives = state['lives']
         num_groups_found = state['num_groups_found']
         
-        # 1. Group
-        grouped_embeddings = self.grouper(16, word_embeddings) # (B, 1820, 4, D)
+        # 1. Project
+        projected_embeddings = self.projection(word_embeddings)
+
+        # 2. Group
+        grouped_embeddings = self.grouper(16, projected_embeddings) # (B, 1820, 4, D)
         
-        # 2. Score all 1820 groups with Fixed Scorer
-        with torch.no_grad(): # Scorer is fixed
-            all_scores = self.scorer(grouped_embeddings) # (B, 1820)
+        # 3. Score all 1820 groups with Fixed Scorer
+        # We allow gradients to flow back to projection layer
+        all_scores = self.scorer(grouped_embeddings) # (B, 1820)
         
         # 3. Sort and get Top K
         # We want the indices of the top K scores
