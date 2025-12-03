@@ -368,6 +368,11 @@ class ConnectionsDQN(Model):
         # We allow gradients to flow back to projection layer
         all_scores = self.scorer(grouped_embeddings) # (B, 1820)
         
+        # Mask invalid actions if mask provided
+        if 'actions_mask' in state:
+            actions_mask = state['actions_mask'] # (B, 1820)
+            all_scores[~actions_mask] = -float('inf')
+
         # 3. Sort and get Top K
         # We want the indices of the top K scores
         top_k_scores, top_k_indices = torch.topk(all_scores, self.k, dim=1) # (B, K)
@@ -380,23 +385,51 @@ class ConnectionsDQN(Model):
         
         q_values = self.policy(top_k_scores, state_info) # (B, K)
         
-        return q_values, top_k_indices
+        return q_values, top_k_indices, top_k_scores
+
+    def get_best_valid_action(self, state: dict, actions_mask: torch.Tensor) -> int:
+        """
+        Finds the best valid action index across ALL 1820 groups.
+        Used for fallback when Top-K contains no valid moves.
+        """
+        word_embeddings = state['board']
+        
+        # 1. Project
+        projected_embeddings = self.projection(word_embeddings)
+
+        # 2. Group
+        grouped_embeddings = self.grouper(16, projected_embeddings)
+        
+        # 3. Score all
+        with torch.no_grad():
+            all_scores = self.scorer(grouped_embeddings) # (B, 1820)
+            
+        # Assuming Batch Size = 1 for fallback logic
+        scores = all_scores.squeeze(0) # (1820,)
+        
+        # Mask invalid actions
+        # actions_mask is True for valid, False for invalid
+        scores[~actions_mask] = -float('inf')
+        
+        # Get best
+        best_idx = torch.argmax(scores).item()
+        return int(best_idx)
 
     def train_step(self, batch, target_net, gamma=0.99):
         state, action, reward, next_state, finished = batch
         
         # Current Q-values
         # action here is the RANK index (0 to K-1)
-        q_values, _ = self.forward(state)
+        q_values, _, _ = self.forward(state)
         current_q_values = q_values.gather(1, action.long())
         
         # Next Q-values
         with torch.no_grad():
             # Double dqn
-            next_q_values_online, _ = self.forward(next_state)
+            next_q_values_online, _, _ = self.forward(next_state)
             next_actions = next_q_values_online.argmax(dim=1, keepdim=True)
             
-            next_q_values_target, _ = target_net(next_state)
+            next_q_values_target, _, _ = target_net(next_state)
             next_max_q = next_q_values_target.gather(1, next_actions)
             
             target_q_values = reward + gamma * next_max_q * (~finished)

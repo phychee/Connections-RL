@@ -1,5 +1,7 @@
+
 import torch
 import numpy as np
+import random
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from config import GameConfig
@@ -193,105 +195,88 @@ def train_agent(
             }
             
             # Model forward
-            q_values, top_k_indices = model(state_dict) # (1, K), (1, K)
-            q_values = q_values.squeeze(0)  # (K,)
-            top_k_indices = top_k_indices.squeeze(0) # (K,)
-            
-            # Filter mask for Top K
-            # state.actions_mask is (1820,)
-            top_k_mask = state.actions_mask[top_k_indices] # (K,)
-            
-            # Check if we have ANY valid moves in Top K
-            if not top_k_mask.any():
-                # No valid moves in Top K!
-                # This causes infinite loop if we don't handle it.
-                # Penalize and end episode.
-                reward = torch.tensor([-10.0], device=device)
-                finished = True
-                
-                # Store transition (state -> action 0 -> reward -10 -> next_state=state -> finished)
-                # We just use action 0 as a placeholder since we didn't take a real action
-                action_idx = 0
-                
-                # We need to construct next_state_dict for memory
-                # Since we didn't step env, next_state is same as state
-                next_masked_embeddings = board.words.clone()
-                next_masked_embeddings[~state.words_mask] = 0
-                
-                next_lives = lives # Unchanged
-                next_num_groups_found = num_groups_found # Unchanged
-                
-                next_state_dict = {
-                    'board': next_masked_embeddings,
-                    'lives': next_lives,
-                    'num_groups_found': next_num_groups_found,
-                    'words_mask': state.words_mask.unsqueeze(0)
-                }
-                
-                memory_state_dict = {
-                    'board': masked_embeddings,
-                    'lives': lives,
-                    'num_groups_found': num_groups_found,
-                    'words_mask': state.words_mask
-                }
-                
-                memory.push(
-                    memory_state_dict,
-                    torch.tensor([action_idx], device=device),
-                    torch.tensor([reward], device=device),
-                    next_state_dict,
-                    torch.tensor([finished], device=device, dtype=torch.bool)
-                )
-                
-                total_reward += reward.item()
-                break
 
-            action_idx = model.select_action(
-                q_values, 
-                mask=top_k_mask, 
-                epsilon=epsilon
-            )
+            # Add actions_mask to state_dict for model
+            state_dict['actions_mask'] = state.actions_mask.unsqueeze(0)
             
-            # Map rank (action_idx) to actual group index
+            # Forward
+            q_values, top_k_indices, top_k_scores = model(state_dict)
+            q_values = q_values.squeeze(0)
+            top_k_indices = top_k_indices.squeeze(0)
+            top_k_scores = top_k_scores.squeeze(0)
+            
+            # Determine valid actions in Top-K (those with score > -inf)
+            # Since we masked invalid actions with -inf, we just check for that.
+            # However, float comparison can be tricky. Let's use a threshold.
+            valid_mask = top_k_scores > -1e9
+            num_valid = valid_mask.sum().item()
+            
+            # If no valid actions (should not happen unless K=0 or game over logic fail), break
+            if num_valid == 0:
+                 # This implies NO valid moves exist in the entire game (since we masked ALL)
+                 # This should be handled by game over check, but safety net:
+                 break
+            
+            # Exploration Strategy: Top 1/3 of VALID actions
+            if random.random() < epsilon:
+                # Limit to top 1/3 of valid actions
+                limit = max(1, int(np.ceil(num_valid / 3.0)))
+                # Pick random index from 0 to limit-1
+                action_idx = random.randint(0, limit - 1)
+            else:
+                # Greedy: Pick best valid action
+                # Since q_values correspond to sorted top_k, index 0 is best scorer-wise?
+                # NO! q_values are from Policy Network.
+                # Policy Network sees (Score, State).
+                # We want argmax Q, but ONLY for valid indices.
+                
+                # Mask invalid Q-values
+                q_values[~valid_mask] = -float('inf')
+                action_idx = q_values.argmax().item()
+
+            # Map rank to actual group index
             actual_group_idx = top_k_indices[action_idx].item()
             
-            # Step
+            # Step Env
             next_state, reward, finished, info = env.make_guess(board, state, actual_group_idx)
             
+            # Update Loop Variables
             total_reward += reward.item()
+            state = next_state
             
             # Store transition
-            # We store masked embeddings
-            next_masked_embeddings = board.words.clone()
-            next_masked_embeddings[~next_state.words_mask] = 0
-            
-            next_lives = next_state.lives.float() / 4.0
-            next_num_groups_found = next_state.found_groups.sum().float() / 4.0
-            
-            next_state_dict = {
-                'board': next_masked_embeddings,
-                'lives': next_lives,
-                'num_groups_found': next_num_groups_found,
-                'words_mask': next_state.words_mask.unsqueeze(0)
-            }
-            
-            # For memory push, we need unbatched tensors for the current state components
-            # But wait, memory.push expects unbatched tensors
-            # state_dict above has batched tensors (unsqueeze(0))
-            # Let's create unbatched dicts for memory
-            
+            # We need to store actions_mask in memory for training
             memory_state_dict = {
                 'board': masked_embeddings,
                 'lives': lives,
                 'num_groups_found': num_groups_found,
-                'words_mask': state.words_mask
+                'words_mask': state.words_mask, # Original mask
+                'actions_mask': state.actions_mask # Added
+            }
+            
+            # Next state dict for memory
+            next_masked_embeddings = board.words.clone()
+            next_masked_embeddings[~next_state.words_mask] = 0
+            
+            # We need unbatched for memory push?
+            # ReplayMemory.push expects tensors or dicts of tensors?
+            # It seems it takes whatever we give it.
+            # But we need to be consistent with sample().
+            
+            # Let's clean up next_state_dict for memory
+            mem_next_state = {
+                'board': next_masked_embeddings,
+                'lives': next_state.lives.float() / 4.0, # Unbatched
+                'num_groups_found': next_state.found_groups.sum().float() / 4.0, # Unbatched
+                'words_mask': next_state.words_mask,
+                'actions_mask': next_state.actions_mask
             }
             
             memory.push(
                 memory_state_dict,
-                torch.tensor([action_idx], device=device), # Store RANK index
+                torch.tensor([action_idx], device=device),
                 torch.tensor([reward], device=device),
-                next_state_dict,
+                mem_next_state,
                 torch.tensor([finished], device=device, dtype=torch.bool)
             )
             

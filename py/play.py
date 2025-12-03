@@ -119,26 +119,30 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
                 'words_mask': state.words_mask.unsqueeze(0)
             }
             
+            # Add actions_mask to state_dict
+            state_dict['actions_mask'] = state.actions_mask.unsqueeze(0)
+            
             with torch.no_grad():
-                q_values, top_k_indices = model(state_dict) # (1, K), (1, K)
+                q_values, top_k_indices, top_k_scores = model(state_dict) # (1, K), (1, K)
                 q_values = q_values.squeeze(0) # (K,)
                 top_k_indices = top_k_indices.squeeze(0) # (K,)
+                top_k_scores = top_k_scores.squeeze(0)
                 
-                # Filter mask for Top K
-                top_k_mask = state.actions_mask[top_k_indices] # (K,)
+                # Determine valid actions in Top-K
+                valid_mask = top_k_scores > -1e9
+                num_valid = valid_mask.sum().item()
                 
-                # Check if we have ANY valid moves in Top K
-                if not top_k_mask.any():
-                    # No valid moves in Top K!
-                    # This causes infinite loop if we don't handle it.
-                    # End game.
+                if num_valid == 0:
                     break
-
-                action_idx = model.select_action(
-                    q_values, 
-                    mask=top_k_mask, 
-                    epsilon=0.0
-                )
+                
+                # Exploration Strategy: Top 1/3 of VALID actions (if epsilon > 0)
+                # For play.py, epsilon is usually 0, but let's support it
+                epsilon = 0.0 # Hardcoded for now, or pass as arg?
+                # play_game function doesn't take epsilon.
+                
+                # Greedy: Pick best valid action
+                q_values[~valid_mask] = -float('inf')
+                action_idx = q_values.argmax().item()
                 
                 # Map rank to actual group index
                 actual_group_idx = top_k_indices[action_idx].item()
