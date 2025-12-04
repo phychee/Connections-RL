@@ -26,7 +26,7 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
     print(f"Evaluating on {len(test_game_ids)} games.")
     
     # Initialize components
-    # embedder = MiniLMEmbedding()
+    # embedder = MiniLMEmbedding(device=device)
     embedder = GloveEmbedding(device=device)
     grouper = SimpleGrouper(device)
     
@@ -37,8 +37,9 @@ def evaluate_agent(model_path="connections_dqn.pt", num_games=None):
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
-        k=500,
-        device=device
+        k=200,
+        device=device,
+        enable_projection=False
     ).to(device)
     
     # Load weights

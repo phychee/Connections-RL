@@ -240,12 +240,12 @@ class CosineSimilarityScorer(ActionScorer):
         w2 = group_embeddings[:, :, 2, :]
         w3 = group_embeddings[:, :, 3, :]
         
-        s01 = nn.functional.cosine_similarity(w0, w1, dim=2)
-        s02 = nn.functional.cosine_similarity(w0, w2, dim=2)
-        s03 = nn.functional.cosine_similarity(w0, w3, dim=2)
-        s12 = nn.functional.cosine_similarity(w1, w2, dim=2)
-        s13 = nn.functional.cosine_similarity(w1, w3, dim=2)
-        s23 = nn.functional.cosine_similarity(w2, w3, dim=2)
+        s01 = nn.functional.cosine_similarity(w0, w1, dim=2, eps=1e-8)
+        s02 = nn.functional.cosine_similarity(w0, w2, dim=2, eps=1e-8)
+        s03 = nn.functional.cosine_similarity(w0, w3, dim=2, eps=1e-8)
+        s12 = nn.functional.cosine_similarity(w1, w2, dim=2, eps=1e-8)
+        s13 = nn.functional.cosine_similarity(w1, w3, dim=2, eps=1e-8)
+        s23 = nn.functional.cosine_similarity(w2, w3, dim=2, eps=1e-8)
         
         return s01 + s02 + s03 + s12 + s13 + s23
 
@@ -278,23 +278,29 @@ class ConnectionsDQN(Model):
                  contextualizer: Contextualizer,
                  grouper: Grouper,
                  scorer: ActionScorer,
-                 k: int = 500,
+                 k: int = 200,
                  lr=1e-4,
-                 device='cpu'):
+                 device='cpu',
+                 enable_projection: bool = False):
         super().__init__()
-        self.device = device
-        self.k = k
-
-        # projection layer since transformer has context issues
-        self.projection = nn.Sequential(
-            nn.Linear(100, 100),
-            nn.ReLU()
-        ).to(device)
-        
         self.embedder = embedder
         self.contextualizer = contextualizer
         self.grouper = grouper
         self.scorer = scorer
+        self.k = k
+        self.device = device
+        self.enable_projection = enable_projection
+        
+        # Projection Layer: 100 -> 100
+        # This allows the agent to "rotate" embeddings based on game state
+        if self.enable_projection:
+            self.projection = nn.Sequential(
+                nn.Linear(100, 100),
+                nn.ReLU(),
+                nn.Linear(100, 100)
+            ).to(device)
+        else:
+            self.projection = None
         
         # Policy Network to choose among Top K
         self.policy = PolicyNetwork(k=k, state_dim=2).to(device)
@@ -312,7 +318,8 @@ class ConnectionsDQN(Model):
         # So we should probably freeze embedder and NOT use projection for scoring?
         # Or use projection but freeze it?
         # Let's keep projection trainable for now as "preprocessing" but the SCORER is fixed.
-        params += list(self.projection.parameters())
+        if self.projection is not None:
+            params += list(self.projection.parameters())
 
         self.optimizer = optim.Adam(
             params,
@@ -359,7 +366,10 @@ class ConnectionsDQN(Model):
         num_groups_found = state['num_groups_found']
         
         # 1. Project
-        projected_embeddings = self.projection(word_embeddings)
+        if self.enable_projection:
+            projected_embeddings = self.projection(word_embeddings)
+        else:
+            projected_embeddings = word_embeddings
 
         # 2. Group
         grouped_embeddings = self.grouper(16, projected_embeddings) # (B, 1820, 4, D)
@@ -383,7 +393,12 @@ class ConnectionsDQN(Model):
         if num_groups_found.dim() == 1: num_groups_found = num_groups_found.unsqueeze(1)
         state_info = torch.cat([lives, num_groups_found], dim=1) # (B, 2)
         
-        q_values = self.policy(top_k_scores, state_info) # (B, K)
+        # Replace -inf with a safe value (e.g. -10.0) for the network
+        # Cosine similarity is [-1, 1], so -10 is safely "very bad"
+        safe_top_k_scores = top_k_scores.clone()
+        safe_top_k_scores[safe_top_k_scores == -float('inf')] = -10.0
+        
+        q_values = self.policy(safe_top_k_scores, state_info) # (B, K)
         
         return q_values, top_k_indices, top_k_scores
 
@@ -395,7 +410,10 @@ class ConnectionsDQN(Model):
         word_embeddings = state['board']
         
         # 1. Project
-        projected_embeddings = self.projection(word_embeddings)
+        if self.enable_projection:
+            projected_embeddings = self.projection(word_embeddings)
+        else:
+            projected_embeddings = word_embeddings
 
         # 2. Group
         grouped_embeddings = self.grouper(16, projected_embeddings)

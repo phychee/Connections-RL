@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--num_games", type=int, default=None, help="Number of games to play/evaluate")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
     parser.add_argument("--save_dir", type=str, default=None, help="Directory to save the model")
+    parser.add_argument("--pretrained", type=str, default=None, help="Path to pretrained model or 'auto' to run pretraining")
     args = parser.parse_args()
     
     # save in drive if we're in colab
@@ -38,7 +39,8 @@ def main():
         train_agent(
             num_episodes=args.episodes,
             batch_size=args.batch_size,
-            save_path=save_path
+            save_path=save_path,
+            pretrained_path=args.pretrained
         )
         return
 

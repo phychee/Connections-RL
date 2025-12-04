@@ -22,10 +22,10 @@ class ReplayMemory:
     def push(self, state, action, reward, next_state, finished):
         """
         Store the transitions in a queue
-        state: dict {'board': (16, D), 'lives': (1,), 'num_groups_found': (1,)}
+        state: dict {'board': (16, D), 'lives': (1,), 'num_groups_found': (1,), 'words_mask': (16,), 'actions_mask': (1820,)}
         action: (1,)
         reward: (1,)
-        next_state: dict {'board': (16, D), 'lives': (1,), 'num_groups_found': (1,)}
+        next_state: dict {'board': (16, D), 'lives': (1,), 'num_groups_found': (1,), 'words_mask': (16,), 'actions_mask': (1820,)}
         finished: (1,) bool
         """
         if self.s is None:
@@ -40,17 +40,22 @@ class ReplayMemory:
             self.finished = torch.zeros((self.cap, *finished.shape), device=self.device, dtype=finished.dtype)
             self.m = torch.zeros((self.cap, *state['words_mask'].shape), device=self.device, dtype=torch.bool)
             self.next_m = torch.zeros((self.cap, *next_state['words_mask'].shape), device=self.device, dtype=torch.bool)
+            # Add actions_mask storage
+            self.am = torch.zeros((self.cap, *state['actions_mask'].shape), device=self.device, dtype=torch.bool)
+            self.next_am = torch.zeros((self.cap, *next_state['actions_mask'].shape), device=self.device, dtype=torch.bool)
 
         self.s[self.idx] = state['board']
         self.lives[self.idx] = state['lives']
         self.num_groups_found[self.idx] = state['num_groups_found']
         self.m[self.idx] = state['words_mask']
+        self.am[self.idx] = state['actions_mask']
         self.a[self.idx] = action
         self.r[self.idx] = reward
         self.sp[self.idx] = next_state['board']
         self.next_lives[self.idx] = next_state['lives']
         self.next_num_groups_found[self.idx] = next_state['num_groups_found']
         self.next_m[self.idx] = next_state['words_mask']
+        self.next_am[self.idx] = next_state['actions_mask']
         self.finished[self.idx] = finished
 
         self.idx = (self.idx + 1) % self.cap
@@ -69,14 +74,16 @@ class ReplayMemory:
             'board': self.s[sample_idx],
             'lives': self.lives[sample_idx],
             'num_groups_found': self.num_groups_found[sample_idx],
-            'words_mask': self.m[sample_idx]
+            'words_mask': self.m[sample_idx],
+            'actions_mask': self.am[sample_idx]
         }
         
         next_state = {
             'board': self.sp[sample_idx],
             'lives': self.next_lives[sample_idx],
             'num_groups_found': self.next_num_groups_found[sample_idx],
-            'words_mask': self.next_m[sample_idx]
+            'words_mask': self.next_m[sample_idx],
+            'actions_mask': self.next_am[sample_idx]
         }
 
         return (

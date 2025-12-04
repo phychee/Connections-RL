@@ -13,15 +13,16 @@ from replay import ReplayMemory
 
 def train_agent(
     num_episodes=1000,
-    batch_size=32,
-    lr=1e-4,
+    batch_size=64,
+    lr=1e-3,
     gamma=0.99,
     epsilon_start=1.0,
     epsilon_end=0.05,
     epsilon_decay=None, # Unused, we use dynamic logic
     memory_capacity=10000,
     target_update_freq=100,
-    save_path="connections_dqn.pt"
+    save_path="model.pt",
+    pretrained_path=None
 ):
     device = get_device()
     print(f"Training on device: {device}")
@@ -54,10 +55,26 @@ def train_agent(
         contextualizer=None,
         grouper=grouper,
         scorer=scorer,
-        k=500,
+        k=200,
         lr=lr,
-        device=device
+        device=device,
+        enable_projection=False
     ).to(device)
+    
+    if pretrained_path == 'auto':
+        from pretrain import pretrain_policy
+        pretrain_policy(model, device)
+    elif pretrained_path:
+        print(f"Loading pretrained model from {pretrained_path}...")
+        try:
+            # We only want to load the policy network weights if possible, 
+            # or the whole state dict if it matches.
+            # The pretrain.py saves the whole model.state_dict()
+            state_dict = torch.load(pretrained_path, map_location=device)
+            model.load_state_dict(state_dict, strict=False)
+            print("Pretrained weights loaded.")
+        except Exception as e:
+            print(f"Failed to load pretrained weights: {e}")
     
     # Target Network
     target_net = ConnectionsDQN(
@@ -65,9 +82,10 @@ def train_agent(
         contextualizer=None,
         grouper=grouper, # Shared grouper (no params)
         scorer=CosineSimilarityScorer(device).to(device), # New instance
-        k=500,
+        k=200,
         lr=lr,
-        device=device
+        device=device,
+        enable_projection=False
     ).to(device)
     target_net.load_state_dict(model.state_dict())
     target_net.eval()
